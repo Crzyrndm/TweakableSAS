@@ -467,7 +467,7 @@ namespace TweakableSAS
 
         private void drawPIDValues(SASList controllerID, string inputName)
         {
-            SASController controller = GetSAS(controllerID);
+            PIDErrorController controller = GetSAS(controllerID);
             controller.bShow = GUILayout.Toggle(controller.bShow, inputName, UISkin.customStyles[(int)myStyles.btnToggle]);
 
             if (controller.bShow)

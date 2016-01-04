@@ -34,7 +34,8 @@ namespace TweakableSAS
             if (state)
             {
                 btnLauncher.SetTrue(click);
-                btnLauncher.SetTexture(retrograde);            }
+                btnLauncher.SetTexture(retrograde);
+            }
             else
             {
                 btnLauncher.SetFalse(click);

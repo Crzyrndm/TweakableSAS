@@ -10,47 +10,7 @@ namespace TweakableSAS
         D
     }
 
-    public class PIDErrorController : SASController
-    {
-        public PIDErrorController(SASList ID, double Kp, double Ki, double Kd, double OutputMin, double OutputMax, double intClampLower, double intClampUpper, double scalar = 1, double easing = 1)
-                            : base(ID, Kp, Ki, Kd, OutputMin, OutputMax, intClampLower, intClampUpper, scalar, easing)
-        { }
-
-        public PIDErrorController(SASList ID, double[] gains)
-            : base(ID, gains)
-        { }
-
-        public virtual double ResponseD(double error, double rate, PIDmode mode)
-        {
-            if (invertInput)
-            {
-                error *= -1;
-                rate *= -1;
-            }
-
-            double res_d = 0, res_i = 0, res_p = 0;
-            res_d = derivativeError(rate);
-            if (mode == PIDmode.PID)
-                res_i = integralError(error, true);
-            if (mode == PIDmode.PD || mode == PIDmode.PID)
-                res_p = proportionalError(error);
-
-            lastOutput = (invertOutput ? -1 : 1) * Utils.Clamp(res_p + res_i + res_d, OutMin, OutMax);
-            return lastOutput;
-        }
-
-        public virtual float ResponseF(double error, double rate, PIDmode mode)
-        {
-            return (float)ResponseD(error, rate, mode);
-        }
-
-        protected override double derivativeError(double rate)
-        {
-            return rate * k_derivative / scale;
-        }
-    }
-
-    public class PID_Controller
+    public class PIDErrorController
     {
         protected double target_setpoint = 0; // target setpoint
         protected double active_setpoint = 0;
@@ -86,9 +46,11 @@ namespace TweakableSAS
         public bool bShow { get; set; }
         public bool skipDerivative { get; set; }
         public bool isHeadingControl { get; set; }
+        public SASList ctrlID { get; protected set; }
 
-        public PID_Controller(double Kp, double Ki, double Kd, double OutputMin, double OutputMax, double intClampLower, double intClampUpper, double scalar = 1, double easing = 1)
+        public PIDErrorController(SASList ID, double Kp, double Ki, double Kd, double OutputMin, double OutputMax, double intClampLower, double intClampUpper, double scalar = 1, double easing = 1)
         {
+            ctrlID = ID;
             k_proportional = Kp;
             k_integral = Ki;
             k_derivative = Kd;
@@ -100,8 +62,9 @@ namespace TweakableSAS
             this.easing = easing;
         }
 
-        public PID_Controller(double[] gains)
+        public PIDErrorController(SASList ID, double[] gains)
         {
+            ctrlID = ID;
             k_proportional = gains[0];
             k_integral = gains[1];
             k_derivative = gains[2];
@@ -113,47 +76,28 @@ namespace TweakableSAS
             easing = gains[8];
         }
 
-        public virtual double ResponseD(double input, bool useIntegral)
+        public virtual double ResponseD(double error, double rate, PIDmode mode)
         {
-            if (active_setpoint != target_setpoint)
+            if (invertInput)
             {
-                increment += easing * TimeWarp.fixedDeltaTime * 0.01;
-                if (active_setpoint < target_setpoint)
-                {
-                    if (active_setpoint + increment > target_setpoint)
-                        active_setpoint = target_setpoint;
-                    else
-                        active_setpoint += increment;
-                }
-                else
-                {
-                    if (active_setpoint - increment < target_setpoint)
-                        active_setpoint = target_setpoint;
-                    else
-                        active_setpoint -= increment;
-                }
-            }
-            input = (invertInput ? -1 : 1) * Utils.Clamp(input, inMin, inMax);
-            dt = TimeWarp.fixedDeltaTime;
-
-            if (!isHeadingControl)
-                error = input - active_setpoint;
-            else
-                error = TweakableSAS.CurrentAngleTargetRel(input, active_setpoint, 180) - active_setpoint;
-
-            if (skipDerivative)
-            {
-                skipDerivative = false;
-                previous = input;
+                error *= -1;
+                rate *= -1;
             }
 
-            lastOutput = Utils.Clamp((proportionalError(error) + integralError(error, useIntegral) + derivativeError(input)), outMin, outMax);
-            return (invertOutput ? -1 : 1) * lastOutput;
+            double res_d = 0, res_i = 0, res_p = 0;
+            res_d = derivativeError(rate);
+            if (mode == PIDmode.PID)
+                res_i = integralError(error, true);
+            if (mode == PIDmode.PD || mode == PIDmode.PID)
+                res_p = proportionalError(error);
+
+            lastOutput = (invertOutput ? -1 : 1) * Utils.Clamp(res_p + res_i + res_d, OutMin, OutMax);
+            return lastOutput;
         }
 
-        public virtual float ResponseF(double input, bool useIntegral)
+        public virtual float ResponseF(double error, double rate, PIDmode mode)
         {
-            return (float)ResponseD(input, useIntegral);
+            return (float)ResponseD(error, rate, mode);
         }
 
         protected virtual double proportionalError(double error)
@@ -174,20 +118,9 @@ namespace TweakableSAS
             return sum;
         }
 
-        protected virtual double derivativeError(double input)
+        protected virtual double derivativeError(double rate)
         {
-            double difference = 0;
-            if (!isHeadingControl)
-                difference = (input - previous) / dt;
-            else
-            {
-                double inputHeadingRounded = TweakableSAS.CurrentAngleTargetRel(input, previous, 180);
-                difference = (inputHeadingRounded - previous) / dt;
-            }
-            rolling_diff = rolling_diff * rollingFactor + difference * (1 - rollingFactor); // rolling average sometimes helps smooth out a jumpy derivative response
-
-            previous = input;
-            return rolling_diff * k_derivative / scale;
+            return rate * k_derivative / scale;
         }
 
         protected virtual double derivativeErrorRate(double rate)
@@ -372,21 +305,5 @@ namespace TweakableSAS
             }
         }
         #endregion
-    }
-
-    public class SASController : PID_Controller
-    {
-        public SASList ctrlID { get; set; }
-
-        public SASController(SASList ID, double Kp, double Ki, double Kd, double OutputMin, double OutputMax, double intClampLower, double intClampUpper, double scalar = 1, double easing = 1)
-                            : base(Kp, Ki, Kd, OutputMin, OutputMax, intClampLower, intClampUpper, scalar, easing)
-        {
-            ctrlID = ID;
-        }
-
-        public SASController(SASList ID, double[] gains) : base(gains)
-        {
-            ctrlID = ID;
-        }
     }
 }
