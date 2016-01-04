@@ -32,12 +32,11 @@ namespace TweakableSAS
             if (state)
             {
                 btnLauncher.SetTrue(click);
-                btnLauncher.SetTexture(GameDatabase.Instance.GetTexture("TweakableSAS/Icon/Retrograde", false));
-            }
+                btnLauncher.SetTexture(retrograde);            }
             else
             {
                 btnLauncher.SetFalse(click);
-                btnLauncher.SetTexture(GameDatabase.Instance.GetTexture("TweakableSAS/Icon/Prograde", false));
+                btnLauncher.SetTexture(prograde);
             }
         }
     }
