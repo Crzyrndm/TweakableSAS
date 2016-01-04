@@ -8,11 +8,13 @@ namespace TweakableSAS
         private static Texture2D prograde, retrograde;
         public static void Setup()
         {
-            prograde = GameDatabase.Instance.GetTexture("TweakableSAS/Icon/Prograde", false);
-            retrograde = GameDatabase.Instance.GetTexture("TweakableSAS/Icon/Retrograde", false);
             if (btnLauncher == null)
+            {
+                prograde = GameDatabase.Instance.GetTexture("TweakableSAS/Icon/Prograde", false);
+                retrograde = GameDatabase.Instance.GetTexture("TweakableSAS/Icon/Retrograde", false);
                 btnLauncher = ApplicationLauncher.Instance.AddModApplication(OnToggleTrue, OnToggleFalse, null, null, null, null,
-                                        ApplicationLauncher.AppScenes.FLIGHT, prograde);
+                                            ApplicationLauncher.AppScenes.FLIGHT, prograde);
+            }
         }
 
         private static void OnToggleTrue()
