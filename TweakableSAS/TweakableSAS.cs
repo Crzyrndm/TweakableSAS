@@ -28,9 +28,10 @@ namespace TweakableSAS
     public class TweakableSAS : MonoBehaviour
     {
         #region Globals
-        public GUISkin UISkin;
-        public Color stockBackgroundColor;
-        public VesselData flightData;
+        public static GUISkin UISkin;
+        public static Color stockBackgroundColor;
+        public VesselData flightData = new VesselData();
+        public Vessel ves;
         public PIDErrorController[] SASControllers = new PIDErrorController[3]; // controller per axis
 
         public bool bArmed = false; // if armed, SAS toggles activate/deactivate SSAS
@@ -45,18 +46,18 @@ namespace TweakableSAS
         string newPresetName = "";
         static Rect SSASPresetwindow = new Rect(550, 50, 50, 50);
         static bool bShowSSASPresets = false;
-        bool bDisplay, bShowTooltips;
+        public static bool bDisplay, bShowTooltips;
 
-        // initialisation and default presets stuff
-        // kp, ki, kd, outMin, outMax, iMin, iMax, scalar, easing (unused)
+        //initialisation and default presets stuff
+        // kp, ki, kd, outMin, outMax, iMin, iMax, scalar, easing(unused)
         public readonly static double[] defaultPitchGains = { 0.22, 0.12, 0.3, -1, 1, -1, 1, 1, 200 };
         public readonly static double[] defaultRollGains = { 0.25, 0.1, 0.09, -1, 1, -1, 1, 1, 200 };
         public readonly static double[] defaultHdgGains = { 0.22, 0.12, 0.3, -1, 1, -1, 1, 1, 200 };
 
         public Quaternion currentTarget = Quaternion.identity;
 
-        VesselAutopilot.AutopilotMode currentMode = VesselAutopilot.AutopilotMode.StabilityAssist;
-        FlightUIController.SpeedDisplayModes referenceMode = FlightUIController.SpeedDisplayModes.Surface;
+        VesselAutopilot.AutopilotMode APMode = VesselAutopilot.AutopilotMode.StabilityAssist;
+        FlightUIController.SpeedDisplayModes spdMode = FlightUIController.SpeedDisplayModes.Surface;
 
         public static GUIContent KpLabel = new GUIContent("Kp", "Kp is the proportional response factor. The greater the error between the current state and the target, the greater the impact it has. \r\n\r\nP_res = Kp * error");
         public static GUIContent KiLabel = new GUIContent("Ki", "Ki is the integral response factor. The integral response is the sum of all previous errors and depends on both the magnitude and the duration for which the error remained.\r\n\r\nI_res = Ki * sumOf(error)");
@@ -68,24 +69,58 @@ namespace TweakableSAS
         public static GUIContent DelayLabel = new GUIContent("Delay", "The time in ms between there being no input on the axis and the axis attitude being locked");
 
         #endregion
+        public void Awake()
+        {
+            AppLauncherFlight.Setup();
+        }
 
         public void Start()
         {
+            ves = FlightGlobals.ActiveVessel;
             SASControllers[(int)SASList.Pitch] = new PIDErrorController(SASList.Pitch, defaultPitchGains);
             SASControllers[(int)SASList.Bank] = new PIDErrorController(SASList.Bank, defaultRollGains);
             SASControllers[(int)SASList.Hdg] = new PIDErrorController(SASList.Hdg, defaultHdgGains);
-
             //PresetManager.initDefaultPresets(new SSASPreset(SASControllers, "SSAS"));
             //PresetManager.loadCraftSSASPreset(this);
 
+            GameEvents.onTimeWarpRateChanged.Add(warpHandler);
+            GameEvents.onVesselChange.Add(vesselSwitch);
+            GameEvents.onHideUI.Add(hideUI);
+            GameEvents.onShowUI.Add(showUI);
+
+            ves.OnPostAutopilotUpdate += SASControl;
             tooltip = "";
-            customSkin();
+        }
+
+        public void OnDestroy()
+        {
+            GameEvents.onTimeWarpRateChanged.Remove(warpHandler);
+            GameEvents.onVesselChange.Remove(vesselSwitch);
+            GameEvents.onHideUI.Remove(hideUI);
+            GameEvents.onShowUI.Remove(showUI);
         }
 
         public void warpHandler()
         {
             if (TimeWarp.CurrentRateIndex == 0 && TimeWarp.CurrentRate != 1 && TimeWarp.WarpMode == TimeWarp.Modes.HIGH)
                 updateTarget();
+        }
+
+        public bool UIVisible = true;
+        public void hideUI()
+        {
+            UIVisible = false;
+        }
+        public void showUI()
+        {
+            UIVisible = true;
+        }
+
+        public void vesselSwitch(Vessel v)
+        {
+            ves.OnPostAutopilotUpdate -= SASControl;
+            ves = v;
+            v.OnPostAutopilotUpdate += SASControl;
         }
 
         #region Update / Input monitoring
@@ -95,146 +130,30 @@ namespace TweakableSAS
                 bArmed = !bArmed;
             if (bArmed)
             {
+                pauseManager();
                 if (GameSettings.SAS_TOGGLE.GetKeyDown())
                     ActivitySwitch(!ActivityCheck());
                 if (GameSettings.SAS_HOLD.GetKey())
                     updateTarget();
             }
-            if (FlightGlobals.ActiveVessel.Autopilot != null)
+            if (ves.Autopilot != null)
             {
-                if (currentMode != FlightGlobals.ActiveVessel.Autopilot.Mode && currentMode == VesselAutopilot.AutopilotMode.StabilityAssist)
+                if (APMode != ves.Autopilot.Mode && APMode == VesselAutopilot.AutopilotMode.StabilityAssist)
                     updateTarget();
-                if (referenceMode == FlightUIController.SpeedDisplayModes.Surface && FlightUIController.speedDisplayMode != FlightUIController.SpeedDisplayModes.Surface)
-                    orbitalTarget = FlightGlobals.ActiveVessel.transform.rotation;
-                currentMode = FlightGlobals.ActiveVessel.Autopilot.Mode;
-                referenceMode = FlightUIController.speedDisplayMode;
-            }
-            if (bActive[(int)SASList.Hdg])
-                GetSAS(SASList.Hdg).SetPoint = calculateTargetHeading(currentTarget);
-        }
-        #endregion
-
-        #region Fixed Update / Control
-        public void SurfaceSAS(FlightCtrlState state)
-        {
-            if (!bArmed || !ActivityCheck() || !FlightGlobals.ActiveVessel.IsControllable || FlightGlobals.ActiveVessel.HoldPhysics)
-                return;
-
-            pauseManager();
-            // facing vectors : vessel (vesRefTrans.up) and target (targetRot * Vector3.forward)
-            Transform vesRefTrans = FlightGlobals.ActiveVessel.ReferenceTransform.transform;
-            Quaternion targetRot = TargetModeSwitch();
-            double angleError = Vector3d.Angle(vesRefTrans.up, targetRot * Vector3d.forward);
-            //================================
-            // pitch / yaw response ratio. Original method from MJ attitude controller
-            Vector3d relativeTargetFacing = vesRefTrans.rotation.Inverse() * targetRot * Vector3d.forward;
-            Vector2d PYerror = (new Vector2d(relativeTargetFacing.x, -relativeTargetFacing.z)).normalized * angleError;
-            //================================
-            // roll error is dependant on path taken in pitch/yaw plane. Minimise unnecesary rotation by evaluating the roll error relative to that path
-            Vector3d normVec = Vector3d.Cross(targetRot * Vector3d.forward, vesRefTrans.up).normalized; // axis normal to desired plane of travel
-            //Quaternion rollTargetRot = Quaternion.AngleAxis((float)angleError, normVec) * targetRot; // rotation with facing aligned. Direction is taken care of by the orientation of the normVec
-            Vector3d rollTargetRight = Quaternion.AngleAxis((float)angleError, normVec) * targetRot * Vector3d.right;
-            double rollError = Vector3d.Angle(vesRefTrans.right, rollTargetRight) * Math.Sign(Vector3d.Dot(rollTargetRight, vesRefTrans.forward)); // signed angle difference between vessel.right and rollTargetRot.right
-            //================================
-
-            setCtrlState(SASList.Bank, rollError, FlightGlobals.ActiveVessel.angularVelocity.y * Mathf.Rad2Deg, ref state.roll);
-            setCtrlState(SASList.Pitch, PYerror.y, FlightGlobals.ActiveVessel.angularVelocity.x * Mathf.Rad2Deg, ref state.pitch);
-            setCtrlState(SASList.Hdg, PYerror.x, FlightGlobals.ActiveVessel.angularVelocity.z * Mathf.Rad2Deg, ref state.yaw);
-        }
-
-        void setCtrlState(SASList ID, double error, double rate, ref float axisCtrlState)
-        {
-            PIDmode mode = PIDmode.PID;
-            if (!FlightGlobals.ActiveVessel.checkLanded() && FlightGlobals.ActiveVessel.IsControllable)
-                mode = PIDmode.PD; // no integral when it can't do anything useful
-
-            if (allowControl(ID))
-                axisCtrlState = GetSAS(ID).ResponseF(error, rate, mode);
-            else if (!hasInput(ID))
-                axisCtrlState = 0; // kill off stock SAS inputs
-            // nothing happens if player input is present
-        }
-
-        Quaternion orbitalTarget = Quaternion.identity;
-        Quaternion TargetModeSwitch()
-        {
-            Quaternion target = Quaternion.identity;
-            switch (FlightGlobals.ActiveVessel.Autopilot.Mode)
-            {
-                case VesselAutopilot.AutopilotMode.StabilityAssist:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                if (spdMode != FlightUIController.speedDisplayMode)
+                {
+                    if (spdMode == FlightUIController.SpeedDisplayModes.Surface)
                     {
-                        float hdgAngle = (float)(bActive[(int)SASList.Hdg] ? GetSAS(SASList.Hdg).SetPoint : flightData.heading);
-                        float pitchAngle = (float)(bActive[(int)SASList.Pitch] ? GetSAS(SASList.Pitch).SetPoint : flightData.pitch);
 
-                        target = Quaternion.LookRotation(flightData.planetNorth, flightData.planetUp);
-                        target = Quaternion.AngleAxis(hdgAngle, target * Vector3.up) * target; // heading rotation
-                        target = Quaternion.AngleAxis(pitchAngle, target * -Vector3.right) * target; // pitch rotation
                     }
                     else
-                        return orbitalTarget * Quaternion.Euler(-90, 0, 0);
-                    break;
-                case VesselAutopilot.AutopilotMode.Prograde:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit)
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.obt_velocity, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.srf_velocity, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.obt_velocity - FlightGlobals.ActiveVessel.targetObject.GetVessel().obt_velocity, flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.Retrograde:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit)
-                        target = Quaternion.LookRotation(-FlightGlobals.ActiveVessel.obt_velocity, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.srf_velocity, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.targetObject.GetVessel().obt_velocity - FlightGlobals.ActiveVessel.obt_velocity, flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.RadialOut:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
-                        target = Quaternion.LookRotation(flightData.obtRadial, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
-                        target = Quaternion.LookRotation(flightData.srfRadial, flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.RadialIn:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
-                        target = Quaternion.LookRotation(-flightData.obtRadial, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
-                        target = Quaternion.LookRotation(-flightData.srfRadial, flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.Normal:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
-                        target = Quaternion.LookRotation(flightData.obtNormal, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
-                        target = Quaternion.LookRotation(flightData.srfNormal, flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.Antinormal:
-                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
-                        target = Quaternion.LookRotation(-flightData.obtNormal, flightData.planetUp);
-                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
-                        target = Quaternion.LookRotation(-flightData.srfNormal, flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.Target:
-                    if (!ReferenceEquals(FlightGlobals.ActiveVessel.targetObject, null))
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.targetObject.GetVessel().GetWorldPos3D() - FlightGlobals.ActiveVessel.GetWorldPos3D(), flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.AntiTarget:
-                    if (!ReferenceEquals(FlightGlobals.ActiveVessel.targetObject, null))
-                        target = Quaternion.LookRotation(FlightGlobals.ActiveVessel.GetWorldPos3D() - FlightGlobals.ActiveVessel.targetObject.GetVessel().GetWorldPos3D(), flightData.planetUp);
-                    break;
-                case VesselAutopilot.AutopilotMode.Maneuver:
-                    if (!ReferenceEquals(FlightGlobals.ActiveVessel.patchedConicSolver.maneuverNodes, null) && FlightGlobals.ActiveVessel.patchedConicSolver.maneuverNodes.Count > 0)
-                        target = FlightGlobals.ActiveVessel.patchedConicSolver.maneuverNodes[0].nodeRotation;
-                    break;
+                        orbitalTarget = ves.transform.rotation;
+                }
+                APMode = ves.Autopilot.Mode;
+                spdMode = FlightUIController.speedDisplayMode;
             }
-            float rollAngle = (float)(bActive[(int)SASList.Bank] ? GetSAS(SASList.Bank).SetPoint : flightData.bank);
-            target = Quaternion.AngleAxis(-rollAngle, target * Vector3.forward) * target; // roll rotation
-            return target;
-        }
-
-        bool allowControl(SASList ID)
-        {
-            return bActive[(int)ID] && !bPause[(int)ID];
+            if (bActive[(int)SASList.Hdg])
+                GetSAS(SASList.Hdg).SetPoint = calculateTargetHeading(currentTarget, ves);
         }
 
         private void pauseManager()
@@ -272,13 +191,138 @@ namespace TweakableSAS
                     StartCoroutine(FadeInAxis(SASList.Bank));
             }
         }
+        #endregion
+
+        #region Fixed Update / Control
+        public void SASControl(FlightCtrlState state)
+        {
+            if (ves.HoldPhysics)
+                return;
+            flightData.updateAttitude();
+            if (!bArmed || !ActivityCheck() || !ves.IsControllable)
+                return;
+
+            // facing vectors : vessel (vesRefTrans.up) and target (targetRot * Vector3.forward)
+            Transform vesRefTrans = ves.ReferenceTransform.transform;
+            Quaternion targetRot = TargetModeSwitch();
+            double angleError = Vector3d.Angle(vesRefTrans.up, targetRot * Vector3d.forward);
+            //================================
+            // pitch / yaw response ratio. Original method from MJ attitude controller
+            Vector3d relativeTargetFacing = vesRefTrans.rotation.Inverse() * targetRot * Vector3d.forward;
+            Vector2d PYerror = (new Vector2d(relativeTargetFacing.x, -relativeTargetFacing.z)).normalized * angleError;
+            //================================
+            // roll error is dependant on path taken in pitch/yaw plane. Minimise unnecesary rotation by evaluating the roll error relative to that path
+            Vector3d normVec = Vector3d.Cross(targetRot * Vector3d.forward, vesRefTrans.up).normalized; // axis normal to desired plane of travel
+            Vector3d rollTargetRight = Quaternion.AngleAxis((float)angleError, normVec) * targetRot * Vector3d.right;
+            double rollError = Vector3d.Angle(vesRefTrans.right, rollTargetRight) * Math.Sign(Vector3d.Dot(rollTargetRight, vesRefTrans.forward)); // signed angle difference between vessel.right and rollTargetRot.right
+            //================================
+
+            setCtrlState(SASList.Bank, rollError, ves.angularVelocity.y * Mathf.Rad2Deg, ref state.roll);
+            setCtrlState(SASList.Pitch, PYerror.y, ves.angularVelocity.x * Mathf.Rad2Deg, ref state.pitch);
+            setCtrlState(SASList.Hdg, PYerror.x, ves.angularVelocity.z * Mathf.Rad2Deg, ref state.yaw);
+        }
+
+        void setCtrlState(SASList ID, double error, double rate, ref float axisCtrlState)
+        {
+            PIDmode mode = PIDmode.PID;
+            if (!ves.checkLanded() && ves.IsControllable)
+                mode = PIDmode.PD; // no integral when it can't do anything useful
+
+            if (allowControl(ID))
+                axisCtrlState = GetSAS(ID).ResponseF(error, rate, mode);
+            else if (!hasInput(ID))
+                axisCtrlState = 0; // kill off stock SAS inputs
+            // nothing happens if player input is present
+        }
+
+        Quaternion orbitalTarget = Quaternion.identity;
+        Quaternion TargetModeSwitch()
+        {
+            Quaternion target = Quaternion.identity;
+            switch (ves.Autopilot.Mode)
+            {
+                case VesselAutopilot.AutopilotMode.StabilityAssist:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                    {
+                        float hdgAngle = (float)(bActive[(int)SASList.Hdg] ? GetSAS(SASList.Hdg).SetPoint : flightData.heading);
+                        float pitchAngle = (float)(bActive[(int)SASList.Pitch] ? GetSAS(SASList.Pitch).SetPoint : flightData.pitch);
+
+                        target = Quaternion.LookRotation(flightData.planetNorth, flightData.planetUp);
+                        target = Quaternion.AngleAxis(hdgAngle, target * Vector3.up) * target; // heading rotation
+                        target = Quaternion.AngleAxis(pitchAngle, target * -Vector3.right) * target; // pitch rotation
+                    }
+                    else
+                        return orbitalTarget * Quaternion.Euler(-90, 0, 0);
+                    break;
+                case VesselAutopilot.AutopilotMode.Prograde:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit)
+                        target = Quaternion.LookRotation(ves.obt_velocity, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                        target = Quaternion.LookRotation(ves.srf_velocity, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
+                        target = Quaternion.LookRotation(ves.obt_velocity - ves.targetObject.GetVessel().obt_velocity, flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.Retrograde:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit)
+                        target = Quaternion.LookRotation(-ves.obt_velocity, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                        target = Quaternion.LookRotation(ves.srf_velocity, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
+                        target = Quaternion.LookRotation(ves.targetObject.GetVessel().obt_velocity - ves.obt_velocity, flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.RadialOut:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
+                        target = Quaternion.LookRotation(flightData.obtRadial, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                        target = Quaternion.LookRotation(flightData.srfRadial, flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.RadialIn:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
+                        target = Quaternion.LookRotation(-flightData.obtRadial, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                        target = Quaternion.LookRotation(-flightData.srfRadial, flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.Normal:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
+                        target = Quaternion.LookRotation(flightData.obtNormal, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                        target = Quaternion.LookRotation(flightData.srfNormal, flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.Antinormal:
+                    if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit || FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Target)
+                        target = Quaternion.LookRotation(-flightData.obtNormal, flightData.planetUp);
+                    else if (FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Surface)
+                        target = Quaternion.LookRotation(-flightData.srfNormal, flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.Target:
+                    if (!ReferenceEquals(ves.targetObject, null))
+                        target = Quaternion.LookRotation(ves.targetObject.GetVessel().GetWorldPos3D() - ves.GetWorldPos3D(), flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.AntiTarget:
+                    if (!ReferenceEquals(ves.targetObject, null))
+                        target = Quaternion.LookRotation(ves.GetWorldPos3D() - ves.targetObject.GetVessel().GetWorldPos3D(), flightData.planetUp);
+                    break;
+                case VesselAutopilot.AutopilotMode.Maneuver:
+                    if (!ReferenceEquals(ves.patchedConicSolver.maneuverNodes, null) && ves.patchedConicSolver.maneuverNodes.Count > 0)
+                        target = ves.patchedConicSolver.maneuverNodes[0].nodeRotation;
+                    break;
+            }
+            float rollAngle = (float)(bActive[(int)SASList.Bank] ? GetSAS(SASList.Bank).SetPoint : flightData.bank);
+            target = Quaternion.AngleAxis(-rollAngle, target * Vector3.forward) * target; // roll rotation
+            return target;
+        }
+
+        bool allowControl(SASList ID)
+        {
+            return bActive[(int)ID] && !bPause[(int)ID];
+        }
 
         private void updateTarget()
         {
             StartCoroutine(FadeInAxis(SASList.Pitch));
             StartCoroutine(FadeInAxis(SASList.Bank));
             StartCoroutine(FadeInAxis(SASList.Hdg));
-            orbitalTarget = FlightGlobals.ActiveVessel.transform.rotation;
+            orbitalTarget = ves.transform.rotation;
         }
 
         /// <summary>
@@ -287,14 +331,14 @@ namespace TweakableSAS
         IEnumerator FadeInAxis(SASList axis)
         {
             updateSetpoint(axis, getCurrentVal(axis));
-            while (Math.Abs(getCurrentRate(axis, FlightGlobals.ActiveVessel) * Mathf.Rad2Deg) > 10)
+            while (Math.Abs(getCurrentRate(axis, ves) * Mathf.Rad2Deg) > 10)
             {
                 updateSetpoint(axis, getCurrentVal(axis));
                 yield return null;
             }
-            orbitalTarget = FlightGlobals.ActiveVessel.transform.rotation;
+            orbitalTarget = ves.transform.rotation;
             if (axis == SASList.Hdg)
-                currentTarget = getPlaneRotation(flightData.heading);
+                currentTarget = getPlaneRotation(flightData.heading, ves);
         }
 
         void updateSetpoint(SASList ID, double setpoint)
@@ -337,13 +381,17 @@ namespace TweakableSAS
         /// </summary>
         public void setStockSAS(bool state)
         {
-            FlightGlobals.ActiveVessel.ActionGroups.SetGroup(KSPActionGroup.SAS, state);
+            ves.ActionGroups.SetGroup(KSPActionGroup.SAS, state);
         }
 
         #region GUI
-        public void drawGUI()
+        public void OnGUI()
         {
-            Color stockColor = GUI.backgroundColor;
+            if (ReferenceEquals(UISkin, null))
+                customSkin();
+            if (!UIVisible)
+                return;
+
             // SAS toggle button
             // is before the bDisplay check so it can be up without the rest of the UI
             if (bArmed && FlightUIModeController.Instance.navBall.expanded)
@@ -355,7 +403,7 @@ namespace TweakableSAS
 
                 if (GUI.Button(new Rect(Screen.width / 2 + 50, Screen.height - 200, 50, 30), "SSAS"))
                     ActivitySwitch(!ActivityCheck());
-                GUI.backgroundColor = stockColor;
+                GUI.backgroundColor = stockBackgroundColor;
             }
 
             // Main and preset window stuff
@@ -363,12 +411,12 @@ namespace TweakableSAS
             {
                 SSASwindow = GUILayout.Window(78934856, SSASwindow, drawSSASWindow, "SSAS", GUILayout.Height(0));
 
-                if (bShowSSASPresets)
-                {
-                    SSASPresetwindow = GUILayout.Window(78934859, SSASPresetwindow, drawSSASPresetWindow, "SSAS Presets", GUILayout.Height(0));
-                    SSASPresetwindow.x = SSASwindow.x + SSASwindow.width;
-                    SSASPresetwindow.y = SSASwindow.y;
-                }
+                //if (bShowSSASPresets)
+                //{
+                //    SSASPresetwindow = GUILayout.Window(78934859, SSASPresetwindow, drawSSASPresetWindow, "SSAS Presets", GUILayout.Height(0));
+                //    SSASPresetwindow.x = SSASwindow.x + SSASwindow.width;
+                //    SSASPresetwindow.y = SSASwindow.y;
+                //}
                 if (tooltip != "" && bShowTooltips)
                     GUILayout.Window(34246, new Rect(SSASwindow.x + SSASwindow.width, Screen.height - Input.mousePosition.y, 0, 0), tooltipWindow, "", UISkin.label, GUILayout.Height(0), GUILayout.Width(300));
             }
@@ -379,36 +427,34 @@ namespace TweakableSAS
             if (GUI.Button(new Rect(SSASwindow.width - 16, 2, 14, 14), ""))
                 bDisplay = false;
 
-            bShowSSASPresets = GUILayout.Toggle(bShowSSASPresets, bShowSSASPresets ? "Hide SAS Presets" : "Show SAS Presets");
+            //bShowSSASPresets = GUILayout.Toggle(bShowSSASPresets, bShowSSASPresets ? "Hide SAS Presets" : "Show SAS Presets");
 
             Color tempColor = GUI.backgroundColor;
             GUI.backgroundColor = XKCDColors.BlueBlue;
             if (GUILayout.Button(bArmed ? "Disarm SAS" : "Arm SAS"))
             {
                 bArmed = !bArmed;
-                ActivitySwitch(FlightGlobals.ActiveVessel.ActionGroups[KSPActionGroup.SAS]);
+                ActivitySwitch(ves.ActionGroups[KSPActionGroup.SAS]);
             }
             GUI.backgroundColor = tempColor;
 
             if (bArmed)
             {
-                if (!(FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit && currentMode == VesselAutopilot.AutopilotMode.StabilityAssist))
+                if (!(FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit))
                 {
-                    if (currentMode == VesselAutopilot.AutopilotMode.StabilityAssist)
+                    if (APMode == VesselAutopilot.AutopilotMode.StabilityAssist)
                     {
                         GetSAS(SASList.Pitch).SetPoint = TogPlusNumBox("Pitch:", SASList.Pitch, flightData.pitch, 80, 70);
-                        currentTarget = getPlaneRotation(TogPlusNumBox("Heading:", SASList.Hdg, flightData.heading, 80, 70));
+                        currentTarget = getPlaneRotation(TogPlusNumBox("Heading:", SASList.Hdg, flightData.heading, 80, 70), ves);
                     }
                     GetSAS(SASList.Bank).SetPoint = TogPlusNumBox("Roll:", SASList.Bank, flightData.bank, 80, 70);
                 }
-
                 GUILayout.Box("", GUILayout.Height(10)); // seperator
 
                 drawPIDValues(SASList.Pitch, "Pitch");
                 drawPIDValues(SASList.Bank, "Roll");
                 drawPIDValues(SASList.Hdg, "Yaw");
             }
-
             GUI.DragWindow();
             tooltip = GUI.tooltip;
         }
@@ -433,45 +479,45 @@ namespace TweakableSAS
             }
         }
 
-        private void drawSSASPresetWindow(int id)
-        {
-            if (GUI.Button(new Rect(SSASPresetwindow.width - 16, 2, 14, 14), ""))
-                bShowSSASPresets = false;
+        //private void drawSSASPresetWindow(int id)
+        //{
+        //    if (GUI.Button(new Rect(SSASPresetwindow.width - 16, 2, 14, 14), ""))
+        //        bShowSSASPresets = false;
 
-            if (!ReferenceEquals(PresetManager.Instance.activeSSASPreset, null))
-            {
-                GUILayout.Label(string.Format("Active Preset: {0}", PresetManager.Instance.activeSSASPreset.name));
-                if (PresetManager.Instance.activeSSASPreset.name != "SSAS")
-                {
-                    if (GUILayout.Button("Update Preset"))
-                        PresetManager.UpdateSSASPreset(this);
-                }
-                GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
-            }
+        //    if (!ReferenceEquals(PresetManager.Instance.activeSSASPreset, null))
+        //    {
+        //        GUILayout.Label(string.Format("Active Preset: {0}", PresetManager.Instance.activeSSASPreset.name));
+        //        if (PresetManager.Instance.activeSSASPreset.name != "SSAS")
+        //        {
+        //            if (GUILayout.Button("Update Preset"))
+        //                PresetManager.UpdateSSASPreset(this);
+        //        }
+        //        GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
+        //    }
 
-            GUILayout.BeginHorizontal();
-            newPresetName = GUILayout.TextField(newPresetName);
-            if (GUILayout.Button("+", GUILayout.Width(25)))
-                PresetManager.newSSASPreset(ref newPresetName, SASControllers, FlightGlobals.ActiveVessel);
-            GUILayout.EndHorizontal();
+        //    GUILayout.BeginHorizontal();
+        //    newPresetName = GUILayout.TextField(newPresetName);
+        //    if (GUILayout.Button("+", GUILayout.Width(25)))
+        //        PresetManager.newSSASPreset(ref newPresetName, SASControllers, ves);
+        //    GUILayout.EndHorizontal();
 
-            GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
+        //    GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
 
-            //if (GUILayout.Button("Reset to Defaults"))
-            //    PresetManager.loadSSASPreset(PresetManager.Instance.craftPresetDict["default"].SSASPreset, this);
+        //    //if (GUILayout.Button("Reset to Defaults"))
+        //    //    PresetManager.loadSSASPreset(PresetManager.Instance.craftPresetDict["default"].SSASPreset, this);
 
-            GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
+        //    GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
 
-            foreach (SSASPreset p in PresetManager.Instance.SSASPresetList)
-            {
-                GUILayout.BeginHorizontal();
-                if (GUILayout.Button(p.name))
-                    PresetManager.loadSSASPreset(p, this);
-                else if (GUILayout.Button("x", GUILayout.Width(25)))
-                    PresetManager.deleteSSASPreset(p);
-                GUILayout.EndHorizontal();
-            }
-        }
+        //    foreach (SSASPreset p in PresetManager.Instance.SSASPresetList)
+        //    {
+        //        GUILayout.BeginHorizontal();
+        //        if (GUILayout.Button(p.name))
+        //            PresetManager.loadSSASPreset(p, this);
+        //        else if (GUILayout.Button("x", GUILayout.Width(25)))
+        //            PresetManager.deleteSSASPreset(p);
+        //        GUILayout.EndHorizontal();
+        //    }
+        //}
 
         /// <summary>
         /// Draws a toggle button and text box of specified widths with update button.
@@ -552,9 +598,9 @@ namespace TweakableSAS
         /// <summary>
         /// calculate current heading from plane rotation
         /// </summary>
-        public static double calculateTargetHeading(Quaternion rotation)
+        public static double calculateTargetHeading(Quaternion rotation, Vessel vessel)
         {
-            Vector3 fwd = Vector3.Cross(getPlaneNormal(rotation), VesselData.Instance.planetUp);
+            Vector3 fwd = Vector3.Cross(getPlaneNormal(rotation, vessel), VesselData.Instance.planetUp);
             double heading = Vector3.Angle(fwd, VesselData.Instance.planetNorth) * Math.Sign(Vector3.Dot(fwd, VesselData.Instance.planetEast));
             return headingClamp(heading, 360);
         }
@@ -578,20 +624,20 @@ namespace TweakableSAS
         /// <summary>
         /// calculate the planet relative rotation from the plane normal vector
         /// </summary>
-        public static Quaternion getPlaneRotation(Vector3 planeNormal)
+        public static Quaternion getPlaneRotation(Vector3 planeNormal, Vessel vessel)
         {
-            return Quaternion.FromToRotation(FlightGlobals.ActiveVessel.mainBody.transform.right, planeNormal);
+            return Quaternion.FromToRotation(vessel.mainBody.transform.right, planeNormal);
         }
 
-        public static Quaternion getPlaneRotation(double heading)
+        public static Quaternion getPlaneRotation(double heading, Vessel vessel)
         {
             Vector3 planeNormal = vecHeading(heading);
-            return getPlaneRotation(planeNormal);
+            return getPlaneRotation(planeNormal, vessel);
         }
 
-        public static Vector3 getPlaneNormal(Quaternion rotation)
+        public static Vector3 getPlaneNormal(Quaternion rotation, Vessel vessel)
         {
-            return rotation * FlightGlobals.ActiveVessel.mainBody.transform.right;
+            return rotation * vessel.mainBody.transform.right;
         }
 
         public static bool IsNeutral(AxisBinding axis)
@@ -661,7 +707,7 @@ namespace TweakableSAS
             }
         }
 
-        public void customSkin()
+        public static void customSkin()
         {
             UISkin = (GUISkin)MonoBehaviour.Instantiate(UnityEngine.GUI.skin);
             UISkin.customStyles = new GUIStyle[Enum.GetValues(typeof(myStyles)).GetLength(0)];

@@ -20,25 +20,12 @@ namespace TweakableSAS
         public List<SSASPreset> SSASPresetList = new List<SSASPreset>();
         public SSASPreset activeSSASPreset = null;
 
-        const string presetsPath = "GameData/Pilot Assistant/Presets.cfg";
-        const string defaultsPath = "GameData/Pilot Assistant/Defaults.cfg";
+        const string presetsPath = "GameData/TweakableSAS/Presets.cfg";
+        const string defaultsPath = "GameData/TweakableSAS/Defaults.cfg";
 
-        const string craftDefaultName = "default";
-        const string asstDefaultName = "default";
-        const string ssasDefaultName = "SSAS";
-        const string SASDefaultName = "stock";
-        const string RSASDefaultName = "RSAS";
-
-        const string craftPresetNodeName = "CraftPreset";
-        const string asstPresetNodeName = "PIDPreset";
-        const string sasPresetNodeName = "SASPreset";
-        const string rsasPresetNodeName = "RSASPreset";
-        const string ssasPresetNodeName = "SSASPreset";
-
-        const string craftAsstKey = "pilot";
-        const string craftSSASKey = "ssas";
-        const string craftSASKey = "stock";
-        const string craftRSASKey = "rsas";
+        const string craftPresetNodeName = "TSASCraftPreset";
+        const string craftSSASKey = "TSAS";
+        const string sasPresetNodeName = "TSASPreset";
 
         const string hdgCtrlr = "HdgBankController";
         const string yawCtrlr = "HdgYawController";
@@ -82,7 +69,7 @@ namespace TweakableSAS
         {
             SSASPreset SSASDefault = null;
 
-            foreach (ConfigNode node in GameDatabase.Instance.GetConfigNodes(ssasPresetNodeName))
+            foreach (ConfigNode node in GameDatabase.Instance.GetConfigNodes(sasPresetNodeName))
             {
                 if (ReferenceEquals(node, null))
                     continue;
@@ -93,9 +80,10 @@ namespace TweakableSAS
                 gains.Add(controllerSASGains(node.GetNode(rudderCtrlr), SASList.Hdg));
 
                 string name = node.GetValue("name");
-                if (name == ssasDefaultName)
-                    SSASDefault = new SSASPreset(gains, name);
-                else if (!instance.SSASPresetList.Any(p => p.name == name))
+                //if (name == DefaultName)
+                //    SSASDefault = new SSASPreset(gains, name);
+                /*else*/
+                if (!instance.SSASPresetList.Any(p => p.name == name))
                     instance.SSASPresetList.Add(new SSASPreset(gains, name));
             }
         }
@@ -130,7 +118,7 @@ namespace TweakableSAS
         //    saveDefaults();
         //}
 
-        
+
 
         public static double[] controllerSASGains(ConfigNode node, SASList type)
         {
@@ -163,11 +151,11 @@ namespace TweakableSAS
             }
         }
 
-        
+
 
         public static ConfigNode SSASPresetNode(SSASPreset preset)
         {
-            ConfigNode node = new ConfigNode(ssasPresetNodeName);
+            ConfigNode node = new ConfigNode(sasPresetNodeName);
             node.AddValue("name", preset.name);
             node.AddNode(PIDnode(aileronCtrlr, (int)SASList.Bank, preset));
             node.AddNode(PIDnode(rudderCtrlr, (int)SASList.Hdg, preset));
@@ -175,8 +163,6 @@ namespace TweakableSAS
 
             return node;
         }
-
-        
 
         public static ConfigNode PIDnode(string name, int index, SSASPreset preset)
         {

@@ -50,7 +50,7 @@ namespace TweakableSAS
         }
     }
 
-    public class PID_Controller : MonoBehaviour
+    public class PID_Controller
     {
         protected double target_setpoint = 0; // target setpoint
         protected double active_setpoint = 0;

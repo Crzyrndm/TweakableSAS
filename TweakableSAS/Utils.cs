@@ -16,8 +16,6 @@ namespace TweakableSAS
                 return val;
         }
 
-        
-
         public static Vector3d projectOnPlane(this Vector3d vector, Vector3d planeNormal)
         {
             return vector - Vector3d.Project(vector, planeNormal);
