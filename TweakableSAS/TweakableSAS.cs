@@ -43,7 +43,7 @@ namespace TweakableSAS
         readonly double bankAngleSynch = 5; // the bank angle below which pitch and yaw unlock seperately
 
         public static Rect SSASwindow = new Rect(10, 505, 100, 30); // gui window rect
-        string newPresetName = "";
+        string newPresetName = string.Empty;
         static Rect SSASPresetwindow = new Rect(550, 50, 50, 50);
         static bool bShowSSASPresets = false;
         public static bool bDisplay, bShowTooltips;
@@ -208,7 +208,7 @@ namespace TweakableSAS
             double angleError = Vector3d.Angle(vesRefTrans.up, targetRot * Vector3d.forward);
             //================================
             // pitch / yaw response ratio. Original method from MJ attitude controller
-            Vector3d relativeTargetFacing = vesRefTrans.rotation.Inverse() * targetRot * Vector3d.forward;
+            Vector3d relativeTargetFacing = Quaternion.Inverse(vesRefTrans.rotation) * targetRot * Vector3d.forward;
             Vector2d PYerror = (new Vector2d(relativeTargetFacing.x, -relativeTargetFacing.z)).normalized * angleError;
             //================================
             // roll error is dependant on path taken in pitch/yaw plane. Minimise unnecesary rotation by evaluating the roll error relative to that path
@@ -394,14 +394,14 @@ namespace TweakableSAS
 
             // SAS toggle button
             // is before the bDisplay check so it can be up without the rest of the UI
-            if (bArmed && FlightUIModeController.Instance.navBall.expanded)
+            if (bArmed && FlightUIModeController.Instance.navBall.StateIndex == 0)
             {
                 if (ActivityCheck())
                     GUI.backgroundColor = XKCDColors.BrightOrange;
                 else
                     GUI.backgroundColor = XKCDColors.BrightSkyBlue;
 
-                if (GUI.Button(new Rect(Screen.width / 2 + 50, Screen.height - 200, 50, 30), "SSAS"))
+                if (GUI.Button(new Rect(Screen.width / 2 + 70 * GameSettings.UI_SCALE, Screen.height - 240 * GameSettings.UI_SCALE, 50, 30), "SSAS"))
                     ActivitySwitch(!ActivityCheck());
                 GUI.backgroundColor = stockBackgroundColor;
             }
@@ -411,12 +411,12 @@ namespace TweakableSAS
             {
                 SSASwindow = GUILayout.Window(78934856, SSASwindow, drawSSASWindow, "SSAS", GUILayout.Height(0));
 
-                //if (bShowSSASPresets)
-                //{
-                //    SSASPresetwindow = GUILayout.Window(78934859, SSASPresetwindow, drawSSASPresetWindow, "SSAS Presets", GUILayout.Height(0));
-                //    SSASPresetwindow.x = SSASwindow.x + SSASwindow.width;
-                //    SSASPresetwindow.y = SSASwindow.y;
-                //}
+                if (bShowSSASPresets)
+                {
+                    SSASPresetwindow = GUILayout.Window(78934859, SSASPresetwindow, drawSSASPresetWindow, "SSAS Presets", GUILayout.Height(0));
+                    SSASPresetwindow.x = SSASwindow.x + SSASwindow.width;
+                    SSASPresetwindow.y = SSASwindow.y;
+                }
                 if (tooltip != "" && bShowTooltips)
                     GUILayout.Window(34246, new Rect(SSASwindow.x + SSASwindow.width, Screen.height - Input.mousePosition.y, 0, 0), tooltipWindow, "", UISkin.label, GUILayout.Height(0), GUILayout.Width(300));
             }
@@ -440,7 +440,7 @@ namespace TweakableSAS
 
             if (bArmed)
             {
-                if (!(FlightUIController.speedDisplayMode == FlightUIController.SpeedDisplayModes.Orbit))
+                if (FlightGlobals.speedDisplayMode == FlightGlobals.SpeedDisplayModes.Surface)
                 {
                     if (APMode == VesselAutopilot.AutopilotMode.StabilityAssist)
                     {
@@ -479,45 +479,45 @@ namespace TweakableSAS
             }
         }
 
-        //private void drawSSASPresetWindow(int id)
-        //{
-        //    if (GUI.Button(new Rect(SSASPresetwindow.width - 16, 2, 14, 14), ""))
-        //        bShowSSASPresets = false;
+        private void drawSSASPresetWindow(int id)
+        {
+            if (GUI.Button(new Rect(SSASPresetwindow.width - 16, 2, 14, 14), ""))
+                bShowSSASPresets = false;
 
-        //    if (!ReferenceEquals(PresetManager.Instance.activeSSASPreset, null))
-        //    {
-        //        GUILayout.Label(string.Format("Active Preset: {0}", PresetManager.Instance.activeSSASPreset.name));
-        //        if (PresetManager.Instance.activeSSASPreset.name != "SSAS")
-        //        {
-        //            if (GUILayout.Button("Update Preset"))
-        //                PresetManager.UpdateSSASPreset(this);
-        //        }
-        //        GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
-        //    }
+            if (!ReferenceEquals(PresetManager.Instance.activeSSASPreset, null))
+            {
+                GUILayout.Label(string.Format("Active Preset: {0}", PresetManager.Instance.activeSSASPreset.name));
+                if (PresetManager.Instance.activeSSASPreset.name != "SSAS")
+                {
+                    if (GUILayout.Button("Update Preset"))
+                        PresetManager.UpdateSSASPreset(this);
+                }
+                GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
+            }
 
-        //    GUILayout.BeginHorizontal();
-        //    newPresetName = GUILayout.TextField(newPresetName);
-        //    if (GUILayout.Button("+", GUILayout.Width(25)))
-        //        PresetManager.newSSASPreset(ref newPresetName, SASControllers, ves);
-        //    GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            newPresetName = GUILayout.TextField(newPresetName);
+            if (GUILayout.Button("+", GUILayout.Width(25)))
+                PresetManager.newSSASPreset(ref newPresetName, SASControllers, ves);
+            GUILayout.EndHorizontal();
 
-        //    GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
+            GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
 
-        //    //if (GUILayout.Button("Reset to Defaults"))
-        //    //    PresetManager.loadSSASPreset(PresetManager.Instance.craftPresetDict["default"].SSASPreset, this);
+            //if (GUILayout.Button("Reset to Defaults"))
+            //    PresetManager.loadSSASPreset(PresetManager.Instance.craftPresetDict["default"].SSASPreset, this);
 
-        //    GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
+            GUILayout.Box("", GUILayout.Height(10), GUILayout.Width(180));
 
-        //    foreach (SSASPreset p in PresetManager.Instance.SSASPresetList)
-        //    {
-        //        GUILayout.BeginHorizontal();
-        //        if (GUILayout.Button(p.name))
-        //            PresetManager.loadSSASPreset(p, this);
-        //        else if (GUILayout.Button("x", GUILayout.Width(25)))
-        //            PresetManager.deleteSSASPreset(p);
-        //        GUILayout.EndHorizontal();
-        //    }
-        //}
+            foreach (SSASPreset p in PresetManager.Instance.SSASPresetList)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button(p.name))
+                    PresetManager.loadSSASPreset(p, this);
+                else if (GUILayout.Button("x", GUILayout.Width(25)))
+                    PresetManager.deleteSSASPreset(p);
+                GUILayout.EndHorizontal();
+            }
+        }
 
         /// <summary>
         /// Draws a toggle button and text box of specified widths with update button.

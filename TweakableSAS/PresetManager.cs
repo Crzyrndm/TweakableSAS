@@ -67,7 +67,7 @@ namespace TweakableSAS
 
         public static void loadPresetsFromFile()
         {
-            SSASPreset SSASDefault = null;
+            //SSASPreset SSASDefault = null;
 
             foreach (ConfigNode node in GameDatabase.Instance.GetConfigNodes(sasPresetNodeName))
             {
